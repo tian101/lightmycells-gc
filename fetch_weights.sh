@@ -5,8 +5,8 @@
 # configurable), or point CHECK_DIR at a local directory that holds them.
 set -euo pipefail
 
-HOST="${HOST:-jupyter-gpu}"
-CHECK_DIR="${CHECK_DIR:-/mnt/data0/lixt/pix/check}"
+HOST="${HOST:?set HOST to the SSH alias of the machine holding the checkpoints}"
+CHECK_DIR="${CHECK_DIR:?set CHECK_DIR to the directory holding the run folders}"
 DEST="$(cd "$(dirname "$0")" && pwd)/weights"
 
 mkdir -p "$DEST"

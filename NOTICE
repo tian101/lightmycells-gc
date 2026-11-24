@@ -1,0 +1,33 @@
+# Provenance
+
+This repository packages a trained image-to-image model as a container for
+grand-challenge.org. It is a derived work; the licence in `LICENSE` (BSD
+2-Clause) is the one carried by the upstream project listed below.
+
+## Upstream
+
+`app/models/`, `app/data/`, `app/util/`, `app/options/` and most of
+`app/predict.py` come from **pytorch-CycleGAN-and-pix2pix**
+
+- https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix
+- Copyright (c) 2017, Phillip Isola and Jun-Yan Zhu
+- BSD 2-Clause, reproduced verbatim in `LICENSE`
+
+`app/models/sfm.py` implements the saliency-based feature modulation described
+in *Spatial Frequency Modulation for Semantic Segmentation* (Linwei Chen et al.).
+
+## Local additions
+
+- `app/gc_entrypoint.py` — grand-challenge.org entrypoint: reads one
+  transmitted-light OME-TIFF and writes four fluorescence OME-TIFFs.
+- `app/data/lmc_dataset.py` — index-driven LightMyCells dataset used for
+  training; only its `normalise()` helper is reused by the entrypoint.
+- `app/predict.py` — tiled inference with a Hann window and the evaluation
+  metrics used during development.
+- `fetch_weights.py`, `Dockerfile*`, `test/`.
+
+## Model weights
+
+The checkpoints on the `v1` release are derivatives of the LightMyCells
+dataset and are published for research use only. They are not part of the
+source distribution and are therefore not covered by `LICENSE`.

@@ -204,7 +204,12 @@ def hann(n):
 
 
 def tiled_infer(net, img8, device, tile_batch=8):
-    """uint8 HxW -> float32 HxW on the 0..255 scale (Hann-blended 512 px tiles)."""
+    """uint8 HxW -> float32 HxW on the 0..255 scale (Hann-blended 512 px tiles).
+
+    tile_batch is reduced automatically if the batch does not fit in VRAM, so a
+    small evaluation GPU (a 16 GiB T4, for instance) still completes instead of
+    raising. Batch size only groups independent tiles, so the result is identical.
+    """
     h, w = img8.shape
     pad_h, pad_w = max(0, TILE - h), max(0, TILE - w)
     if pad_h or pad_w:
@@ -220,17 +225,29 @@ def tiled_infer(net, img8, device, tile_batch=8):
     if xs[-1] != W - TILE:
         xs.append(W - TILE)
     coords = [(y, x) for y in ys for x in xs]
-    for i in range(0, len(coords), tile_batch):
-        chunk = coords[i:i + tile_batch]
-        arr = np.stack([img8[y:y + TILE, x:x + TILE] for y, x in chunk]).astype(np.float32)
-        arr = arr / 127.5 - 1.0
-        t = torch.from_numpy(arr)[:, None].to(device)
-        with torch.inference_mode():
-            out = net(t).float().cpu().numpy()[:, 0]
+    step = max(1, int(tile_batch))
+    i = 0
+    while i < len(coords):
+        chunk = coords[i:i + step]
+        try:
+            arr = np.stack([img8[y:y + TILE, x:x + TILE] for y, x in chunk]).astype(np.float32)
+            arr = arr / 127.5 - 1.0
+            t = torch.from_numpy(arr)[:, None].to(device)
+            with torch.inference_mode():
+                out = net(t).float().cpu().numpy()[:, 0]
+        except (torch.cuda.OutOfMemoryError, RuntimeError) as exc:
+            if step == 1 or "out of memory" not in str(exc).lower():
+                raise
+            step = max(1, step // 2)
+            log(f"  out of memory at tile_batch={step * 2}, retrying with {step}")
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+            continue
         for (y, x), o in zip(chunk, out):
             pred = (np.clip(o, -1, 1) + 1.0) * 127.5
             acc[y:y + TILE, x:x + TILE] += pred * win
             wsum[y:y + TILE, x:x + TILE] += win
+        i += len(chunk)
     return np.clip(acc / np.maximum(wsum, 1e-6), 0, 255)[:h, :w].astype(np.float32)
 
 

@@ -31,7 +31,14 @@ RUN python /opt/fetch_weights.py --dest /opt/weights --tag v1
 WORKDIR /opt/app
 COPY app/ /opt/app/
 
-# the platform bind-mounts these
-RUN mkdir -p /input /output
+# grand-challenge.org refuses to import an image that runs as root, so the
+# entrypoint runs unprivileged. Code and weights stay root-owned and
+# world-readable; only the home directory and /output need to be writable.
+RUN useradd --create-home --uid 1000 --shell /bin/bash appuser \
+ && mkdir -p /input /output \
+ && chown -R appuser:appuser /home/appuser /output
+
+USER appuser
+ENV HOME=/home/appuser
 
 ENTRYPOINT ["python", "/opt/app/gc_entrypoint.py"]

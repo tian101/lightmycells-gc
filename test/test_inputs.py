@@ -6,7 +6,7 @@ Feeds the entrypoint the awkward input shapes the platform might forward
 ground truth so a silently broken model cannot pass as "it produced a file".
 
     python test/test_inputs.py --app /tmp/gc/app --weights /tmp/gc/weights \
-                               --index /mnt/data0/lixt/pix/datasets/lmc/index.json
+                               --index $DATA_ROOT/index.json
 """
 import argparse
 import json
@@ -101,7 +101,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--app", default="/tmp/gc/app")
     ap.add_argument("--weights", default="/tmp/gc/weights")
-    ap.add_argument("--index", default="/mnt/data0/lixt/pix/datasets/lmc/index.json")
+    ap.add_argument("--index", default=os.environ.get("LMC_INDEX", "index.json"))
     ap.add_argument("--only", default="",
                     help="comma separated case names to run (default: all)")
     args = ap.parse_args()

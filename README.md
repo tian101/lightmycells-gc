@@ -49,9 +49,14 @@ gc_container/
 只有走 `Dockerfile.local`（本机构建）时才需要这一步：
 
 ```bash
-./fetch_weights.sh                      # 默认从 SSH 别名 jupyter-gpu 拉
-# 或者：CHECK_DIR=/mnt/data0/lixt/pix/check ./fetch_weights.sh   （在服务器上直接拷）
+./fetch_weights.sh                      # 默认从 SSH 别名 your-host 拉
+# 或者：CHECK_DIR=$CKPT_DIR ./fetch_weights.sh   （在服务器上直接拷）
 ```
+
+`HOST` 和 `CHECK_DIR` 现在必须显式给出（`HOST=user@host CHECK_DIR=/path/to/check ./fetch_weights.sh`），
+脚本不再内置任何内网地址。下文出现的 `$CKPT_DIR` / `$DATA_ROOT` / `$TRAIN_REPO`
+是占位符，分别指「checkpoints 目录」「LightMyCells index.json 所在目录」和
+「训练用的 pytorch-CycleGAN-and-pix2pix 仓库」。
 
 四个文件必须叫 `nucleus.pth` / `mitochondria.pth` / `actin.pth` / `tubulin.pth`，
 共 832 MB：
@@ -100,11 +105,11 @@ git ls-files | Select-String weights   # 应该没有输出
 ```powershell
 $dst = "G:\opencode\pix\gc_weights"
 New-Item -ItemType Directory -Force $dst | Out-Null
-$ck = "/mnt/data0/lixt/pix/check"
-scp jupyter-gpu:$ck/lmc_nucleus_1111_e900_sfmfull_v4_cos1100/latest_net_G.pth   $dst\nucleus.pth
-scp jupyter-gpu:$ck/lmc_mitochondria_1111_e800_sfmfull_v2/latest_net_G.pth       $dst\mitochondria.pth
-scp jupyter-gpu:$ck/lmc_actin_1118_e800_sfmfull_v4/latest_net_G.pth              $dst\actin.pth
-scp jupyter-gpu:$ck/lmc_tubulin_1118_e800_sfmfull_v4/latest_net_G.pth            $dst\tubulin.pth
+$ck = "$CKPT_DIR"
+scp your-host:$ck/lmc_nucleus_1111_e900_sfmfull_v4_cos1100/latest_net_G.pth   $dst\nucleus.pth
+scp your-host:$ck/lmc_mitochondria_1111_e800_sfmfull_v2/latest_net_G.pth       $dst\mitochondria.pth
+scp your-host:$ck/lmc_actin_1118_e800_sfmfull_v4/latest_net_G.pth              $dst\actin.pth
+scp your-host:$ck/lmc_tubulin_1118_e800_sfmfull_v4/latest_net_G.pth            $dst\tubulin.pth
 Get-ChildItem $dst | ForEach-Object { "{0}  {1:N1} MB" -f $_.Name, ($_.Length/1MB) }
 ```
 
@@ -267,13 +272,13 @@ quality vs ground truth (Study_18_img00274, v4 weights):
 ```bash
 # 服务器上
 mkdir -p /tmp/gc && cp -r app /tmp/gc/app && mkdir -p /tmp/gc/weights
-cd /mnt/data0/lixt/pix/check
+cd $CKPT_DIR
 ln -sf $PWD/lmc_nucleus_1111_e900_sfmfull_v4_cos1100/latest_net_G.pth      /tmp/gc/weights/nucleus.pth
 ln -sf $PWD/lmc_mitochondria_1111_e800_sfmfull_v2/latest_net_G.pth          /tmp/gc/weights/mitochondria.pth
 ln -sf $PWD/lmc_actin_1118_e800_sfmfull_v4/latest_net_G.pth                 /tmp/gc/weights/actin.pth
 ln -sf $PWD/lmc_tubulin_1118_e800_sfmfull_v4/latest_net_G.pth               /tmp/gc/weights/tubulin.pth
 
-cd /mnt/data0/lixt/pix/pytorch-CycleGAN-and-pix2pix-master
+cd $TRAIN_REPO
 /usr/local/anaconda3/envs/pytorch/bin/python /tmp/gc/test/verify.py
 ```
 

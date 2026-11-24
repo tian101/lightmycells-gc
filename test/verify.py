@@ -12,9 +12,9 @@ Three things are checked:
 
 Run it on the training server, where both the repo and the checkpoints live:
 
-    python test/verify.py --repo /mnt/data0/lixt/pix/pytorch-CycleGAN-and-pix2pix-master \
+    python test/verify.py --repo $TRAIN_REPO \
                           --app  /tmp/gc/app --weights /tmp/gc/weights \
-                          --index /mnt/data0/lixt/pix/datasets/lmc/index.json
+                          --index $DATA_ROOT/index.json
 """
 import argparse
 import glob
@@ -172,10 +172,10 @@ def e2e(app, weights, index_path, workdir, python):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--repo", default="/mnt/data0/lixt/pix/pytorch-CycleGAN-and-pix2pix-master")
+    ap.add_argument("--repo", default=os.environ.get("TRAIN_REPO", "."))
     ap.add_argument("--app", default="/tmp/gc/app")
     ap.add_argument("--weights", default="/tmp/gc/weights")
-    ap.add_argument("--index", default="/mnt/data0/lixt/pix/datasets/lmc/index.json")
+    ap.add_argument("--index", default=os.environ.get("LMC_INDEX", "index.json"))
     ap.add_argument("--mode", default="all", choices=("all", "repo", "app"))
     args = ap.parse_args()
 
