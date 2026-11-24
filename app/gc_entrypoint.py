@@ -234,9 +234,14 @@ def probe_spacing_um(path):
 
 
 def tiff_resolution(pixel_um):
-    """(resolution, unit) for tifffile from a micrometre pixel size."""
+    """(resolution, unit) for tifffile from a micrometre pixel size.
+
+    The value is an integer on purpose: a float would be stored as a rational with
+    a numerator past 2**32 and get saturated, which shifts the spacing slightly.
+    """
     px = pixel_um if pixel_um and pixel_um > 0 else 1.0
-    return (10000.0 / float(px), 10000.0 / float(px)), "CENTIMETER"
+    px_per_cm = max(1, int(round(10000.0 / float(px))))
+    return (px_per_cm, px_per_cm), "CENTIMETER"
 
 
 def write_ome_tiff(path, arr, pixel_um=None):
