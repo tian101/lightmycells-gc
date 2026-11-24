@@ -172,10 +172,83 @@ def normalise(arr, mode="percentile"):
 
 
 def write_ome_tiff(path, arr):
-    """Write a single-channel uint16 OME-TIFF named after the input uuid."""
+    """Write a single-channel 2-D OME-TIFF named after the input uuid."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tifffile.imwrite(path, arr, ome=True, photometric="minisblack",
                      metadata={"axes": "YX"})
+
+
+# ------------------------------------------------------- whole-slide inputs
+# Large transmitted-light images (whole-slide scans) can be tens of thousands of
+# pixels a side; one uint8 copy of 47655x109341 is 14.6 GiB. Above BIG_PIXELS the
+# entrypoint takes the streaming path instead of decoding the whole plane.
+BIG_PIXELS = 32 * 1024 * 1024
+BAND = 1024
+SAMPLE_STRIDE = 16
+
+
+def probe_series(path):
+    """(shape, dtype) of the first series, from the header only; None if unknown."""
+    try:
+        with tifffile.TiffFile(path) as tf:
+            series = tf.series[0]
+            return tuple(series.shape), np.dtype(series.dtype)
+    except Exception:  # noqa: BLE001 - non-TIFF or single-page oddities
+        return None, None
+
+
+def is_huge(path):
+    shape, _ = probe_series(path)
+    if shape is None:
+        return False
+    return int(np.prod(shape)) > BIG_PIXELS
+
+
+def lut_from_sample(arr, dtype):
+    """1/99.5 percentile LUT computed from a coarse subsample: bounded memory.
+
+    Returns None for dtypes the 8-bit LUT does not cover (float, 32-bit int);
+    those take the slow path in normalise_band().
+    """
+    if dtype.kind in "iu" and np.iinfo(dtype).max < 2 ** 16:
+        sample = arr[::SAMPLE_STRIDE, ::SAMPLE_STRIDE]
+        lo, hi = np.percentile(sample, (PERC_LO, PERC_HI))
+        top = np.iinfo(dtype).max + 1
+        src = np.clip(np.arange(top, dtype=np.float32), lo, hi)
+        return ((src - lo) * (255.0 / max(float(hi - lo), 1e-6)) + 0.5).astype(np.uint8)
+    return None
+
+
+def normalise_band(band, dtype, lut):
+    """Apply the whole-plane LUT to one band."""
+    if lut is not None:
+        return np.take(lut, band.astype(np.int64))
+    return normalise(band)
+
+
+def predict_banded(net, src, dtype, device, dst, tile_batch):
+    """Predict a large plane in horizontal bands and stream it into a BigTIFF.
+
+    Memory stays at O(BAND x W) regardless of the input height. The output is an
+    uncompressed BigTIFF created with the right shape and then filled through a
+    writable memmap.
+    """
+    h, w = src.shape
+    lut = lut_from_sample(src, dtype)
+    tifffile.imwrite(dst, shape=(h, w), dtype=np.uint16, bigtiff=True, ome=True,
+                     photometric="minisblack", metadata={"axes": "YX"})
+    out = tifffile.memmap(dst, mode="r+")
+    try:
+        for y0 in range(0, h, BAND):
+            y1 = min(h, y0 + BAND)
+            img8 = normalise_band(np.asarray(src[y0:y1]), dtype, lut)
+            pred = tiled_infer(net, img8, device, tile_batch)
+            out[y0:y1] = np.round(np.clip(pred, 0, 255) * (65535.0 / 255.0)).astype(np.uint16)
+            print(f"\r    rows {y1}/{h}", end="", flush=True)
+        print()
+    finally:
+        out.flush()
+        del out
 
 
 # ---------------------------------------------------------------------- network
@@ -323,6 +396,34 @@ def main():
 
     for path in files:
         uuid = os.path.splitext(os.path.basename(path))[0]
+
+        # whole-slide inputs cannot be decoded into memory at all; stream instead
+        if is_huge(path):
+            src = None
+            try:
+                src = tifffile.memmap(path)
+            except Exception as exc:  # noqa: BLE001
+                src = None
+                log(f"  cannot memmap ({type(exc).__name__}: {exc})")
+            if src is None or src.ndim != 2:
+                shape, dtype = probe_series(path)
+                raise RuntimeError(
+                    f"{os.path.basename(path)} is {shape} {dtype}: too large to decode "
+                    "and not a contiguous single-plane TIFF, so it cannot be streamed. "
+                    "This entrypoint expects one microscope field of view per case, "
+                    "not a whole-slide scan.")
+            h, w = src.shape
+            log(f"{uuid}: streaming {h}x{w} {src.dtype} in {BAND}-row bands")
+            for ch in CHANNELS:
+                t0 = time.time()
+                dst = os.path.join(args.output_dir, "images", out_slug[ch], f"{uuid}.tif")
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                log(f"  {ch}:")
+                predict_banded(nets[ch], src, src.dtype, device, dst, args.tile_batch)
+                log(f"  {ch:<13} {h}x{w} uint16 -> {dst}  [{time.time() - t0:.1f} s]")
+            del src
+            continue
+
         planes = read_planes(path)
         raw_shape, raw_dtype = np.shape(planes[0]), planes[0].dtype
         if args.z_select == "mid":
