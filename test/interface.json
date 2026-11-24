@@ -1,0 +1,17 @@
+{
+  "inputs": [
+    {
+      "socket": {
+        "slug": "organelles-transmitted-light-ome-tiff",
+        "kind": "Image",
+        "image": { "color_space": "GRAY", "dtype": "uint16" }
+      }
+    }
+  ],
+  "outputs": [
+    { "socket": { "slug": "nucleus-fluorescence-ome-tiff" } },
+    { "socket": { "slug": "mitochondria-fluorescence-ome-tiff" } },
+    { "socket": { "slug": "actin-fluorescence-ome-tiff" } },
+    { "socket": { "slug": "tubulin-fluorescence-ome-tiff" } }
+  ]
+}

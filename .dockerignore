@@ -1,0 +1,7 @@
+test/
+**/__pycache__
+**/*.pyc
+*.npz
+*.tar
+*.tar.gz
+weights/

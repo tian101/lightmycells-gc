@@ -1,0 +1,30 @@
+# Local build: expects weights/ to be populated by ./fetch_weights.sh
+#
+#   docker build -f Dockerfile.local -t lightmycells-v4:1 .
+#   docker save lightmycells-v4:1 | gzip -1 > lightmycells-v4.tar.gz
+#
+# Prefer the plain Dockerfile + GitHub release if you have no Docker locally:
+# grand-challenge.org can build it for you.
+ARG BASE=pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime
+FROM ${BASE}
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    OMP_NUM_THREADS=4 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+RUN pip install --no-cache-dir \
+        "tifffile>=2024.5.10" \
+        "imagecodecs>=2024.1.1" \
+        "pillow>=10.0" \
+ && (pip install --no-cache-dir "SimpleITK>=2.3.1" \
+     || echo "SimpleITK unavailable: .mha inputs will be rejected, .tif works")
+
+WORKDIR /opt/app
+COPY app/ /opt/app/
+COPY weights/ /opt/weights/
+
+RUN mkdir -p /input /output
+
+ENTRYPOINT ["python", "/opt/app/gc_entrypoint.py"]

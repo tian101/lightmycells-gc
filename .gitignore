@@ -1,0 +1,7 @@
+weights/
+*.tar
+*.tar.gz
+*.npz
+__pycache__/
+*.pyc
+.DS_Store

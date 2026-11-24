@@ -1,0 +1,7 @@
+numpy>=1.24
+tifffile>=2024.5.10
+imagecodecs>=2024.1.1
+pillow>=10.0
+SimpleITK>=2.3.1
+# torch comes from the pytorch/pytorch base image; pillow is also needed by the
+# util/ import chain that models/__init__.py pulls in
