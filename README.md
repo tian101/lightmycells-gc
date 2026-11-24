@@ -215,7 +215,10 @@ docker run --gpus all --rm \
 | 归一化 | 整幅图 1% / 99.5% 分位拉伸到 uint8（与训练一致） |
 | 推理 | 512 px 分块、步长 384、Hann 窗融合（与评测一致） |
 | 输出 dtype | uint16，`0..255 → 0..65535` 线性映射 |
+| 输出 spacing | 从输入头继承（`.mha` spacing / TIFF `XResolution`），写 `CENTIMETER` + OME `PhysicalSize`，缺省 1 µm |
+| 选焦 | 挑战文档的 `zfocus_normalized_variance`，与数据集 `best_z` 6/6 一致 |
 | 架构 | `unet_256`, `ngf 64`, `norm batch`, `sfm_levels 5 / start 2 / msau 1 / fan 1`，`input_nc=output_nc=1` |
+| 速度 | A100 2048² 单图 4 通道 ≈ 1.35 s（`tile_batch=16`）→ 304 张 ≈ 7 min；T4 约慢 5–6×，估 40 min |
 
 入口会被平台以 `gc_entrypoint.py <interface.json> <output_dir>` 调用。两个参数都
 可以接受也可以忽略：读写路径固定为 `/input` 和 `/output`（本地测试用 `INPUT_DIR`
@@ -225,15 +228,23 @@ docker run --gpus all --rm \
 输入兼容：
 
 - 单张 2D 灰度
-- z-stack（`Z, H, W`）——默认取 Laplacian 方差最大的那张（`--z_select sharp`）；
-  `--z_select all` 则在每张上都推理、保留最清晰的结果
-- 彩色图 / `(Z, H, W, C)` ——按 Rec.601 灰度化
-- `.mha / .mhd` ——需要 SimpleITK。Dockerfile 里是**尽力安装**（装不上只会退化，
-  不会让 build 失败）；纯 `.tif` 路径不依赖它
+- **z-stack**：`ZYX` 或挑战数据用的 `TCZYX`（`T=C=1`）。按挑战文档给出的
+  `zfocus_normalized_variance`（归一化方差，透射光推荐）自动选最佳焦平面，
+  实测与数据集记录的 `best_z` 6/6 完全一致
+  - `--z_select sharp`（默认）：选一张
+  - `--z_select mid`：取中间层
+  - `--z_select all`：每层都推理，保留归一化方差最高&mdash;&mdash;即最清晰的预测
+- 彩色图 / `(C, Z, Y, X)` ——按 Rec.601 灰度化
+- `.mha / .mhd`（SimpleITK 是硬依赖，镜像里必装）
 - **超大单平面图**（整片扫描，`> 32 Mpx`）——走分带流式路径：内存与图像高度无关
-  （1024 行一带），输出写成未压缩 BigTIFF。实测 8000×9000 四通道共 72 s，
-  峰值内存 3.7 GB。若图像是分块/金字塔 TIFF（`tifffile.memmap` 无法映射），
-  会明确报错说明本容器期望的是单视野而非整片扫描
+  （1024 行一带），输出写成未压缩 BigTIFF。实测 6000×7000 四通道 30 s。
+  若图像是分块/金字塔 TIFF（`tifffile.memmap` 无法映射），会明确报错说明本容器
+  期望的是单视野而非整片扫描
+
+**输出必须带真实像素尺寸**：TIFF 的 `ResolutionUnit=NONE` 会被平台拒绝
+（`Voxel width could not be determined`）。入口从输入头里读像素尺寸
+（`.mha` 的 spacing、TIFF 的 `XResolution`）并原样写入输出的
+`XResolution/YResolution`（`CENTIMETER`）和 OME `PhysicalSize`，缺省 1 µm。
 
 推理耗时（A100 80GB，2044×2048 单视野）：首次含热身约 5 s，之后每通道约 0.16 s，
 一个 case 合计约 6 s。CPU 上慢 100 倍以上，平台上请申请 GPU。

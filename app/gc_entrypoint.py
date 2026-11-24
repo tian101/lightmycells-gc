@@ -116,11 +116,21 @@ def to_gray(plane):
 def read_planes(path):
     """Decode an image into one 2-D grayscale plane per z slice.
 
-    Handles a single plane, a z-stack, a colour image, and the (Z, H, W, C) mix,
-    because the platform forwards whatever microscopy vendor format was uploaded.
+    Handles a single plane, a z-stack, a colour image, and the (T, C, Z, Y, X)
+    layout the challenge data uses.
     """
     arr = _decode(path)
+    # squeeze leading singleton axes: the challenge data is TCZYX with T=C=1
     while arr.ndim > 3 and arr.shape[0] == 1:
+        arr = arr[0]
+    if arr.ndim == 5:  # T, C, Z, Y, X with T > 1: keep the first time point
+        log(f"  shape {arr.shape}: using T=0")
+        arr = arr[0]
+    if arr.ndim == 4:  # (C|T), Z, Y, X
+        if arr.shape[0] in (3, 4) and min(arr.shape[1:]) > 8:
+            log(f"  shape {arr.shape}: treating axis 0 as colour channels")
+            return [to_gray(arr)]
+        log(f"  shape {arr.shape}: keeping index 0 on the leading axis")
         arr = arr[0]
     if arr.ndim == 2:
         return [arr]
@@ -131,13 +141,27 @@ def read_planes(path):
             log(f"  treating shape {arr.shape} as one colour plane")
             return [to_gray(arr)]
         return [to_gray(p) for p in arr]
-    if arr.ndim == 4:
-        return [to_gray(p) for p in arr]
     raise RuntimeError(f"unsupported shape {arr.shape} in {path}")
 
 
+def focus_score(plane):
+    """Normalised variance, the focus criterion the challenge uses for TL data.
+
+    Copied from the challenge documentation (``zfocus_normalized_variance``), which
+    is what defined the ground-truth best z focus. Using a different proxy (a
+    Laplacian, say) would pick a different plane than the one the targets were
+    built at. Higher is sharper.
+    """
+    a = plane.astype(np.float64)
+    y, x = a.shape[-2], a.shape[-1]
+    mean = float(a.mean())
+    if mean <= 0:
+        return 0.0
+    return float(((a - mean) ** 2).sum() / (y * x * mean))
+
+
 def sharpness(plane):
-    """Variance of the 4-neighbour Laplacian: a focus proxy for stack inputs."""
+    """Variance of the 4-neighbour Laplacian: focus proxy for predicted planes."""
     a = plane.astype(np.float32)
     lap = (a[:-2, 1:-1] + a[2:, 1:-1] + a[1:-1, :-2] + a[1:-1, 2:]) - 4.0 * a[1:-1, 1:-1]
     return float(lap.var())
@@ -171,11 +195,79 @@ def normalise(arr, mode="percentile"):
     return (np.clip(arr, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
 
 
-def write_ome_tiff(path, arr):
-    """Write a single-channel 2-D OME-TIFF named after the input uuid."""
+def probe_spacing_um(path):
+    """Pixel size in micrometres, read from the input header. None when unknown.
+
+    grand-challenge.org refuses an output whose voxel size cannot be determined, so
+    the spacing is carried over from the input instead of being invented: MetaImage
+    headers expose it directly, TIFF stores it as pixels-per-unit in XResolution.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if ext in (".mha", ".mhd"):
+        try:
+            import SimpleITK as sitk
+            sp = sitk.ReadImage(path).GetSpacing()
+            if sp and sp[0] > 0:
+                return float(sp[0]) * 1000.0  # mm -> um
+        except Exception:  # noqa: BLE001
+            return None
+        return None
+    try:
+        with tifffile.TiffFile(path) as tf:
+            page = tf.pages[0]
+            res = page.tags.get("XResolution")
+            unit = page.tags.get("ResolutionUnit")
+            if res is None or unit is None:
+                return None
+            num, den = res.value
+            per_unit = float(num) / max(float(den), 1e-9)
+            name = unit.value.name if hasattr(unit.value, "name") else str(unit.value)
+            if per_unit <= 0 or "NONE" in name.upper():
+                return None
+            if "CENTIMETER" in name.upper():
+                return 10000.0 / per_unit    # px per cm -> um per px
+            if "INCH" in name.upper():
+                return 25400.0 / per_unit
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def tiff_resolution(pixel_um):
+    """(resolution, unit) for tifffile from a micrometre pixel size."""
+    px = pixel_um if pixel_um and pixel_um > 0 else 1.0
+    return (10000.0 / float(px), 10000.0 / float(px)), "CENTIMETER"
+
+
+def write_ome_tiff(path, arr, pixel_um=None):
+    """Write a single-channel 2-D OME-TIFF named after the input uuid.
+
+    The resolution tags carry a real unit: a TIFF with ResolutionUnit=NONE is
+    rejected by the platform because the voxel size cannot be derived from it.
+    """
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    res, unit = tiff_resolution(pixel_um)
+    px = pixel_um if pixel_um and pixel_um > 0 else 1.0
     tifffile.imwrite(path, arr, ome=True, photometric="minisblack",
-                     metadata={"axes": "YX"})
+                     resolution=res, resolutionunit=unit,
+                     metadata={"axes": "YX",
+                               "PhysicalSizeX": float(px), "PhysicalSizeXUnit": "\u00b5m",
+                               "PhysicalSizeY": float(px), "PhysicalSizeYUnit": "\u00b5m"})
+    check_written(path, arr.shape)
+
+
+def check_written(path, shape):
+    """Reopen the file we just wrote, so a malformed output fails loudly here."""
+    try:
+        with tifffile.TiffFile(path) as tf:
+            page = tf.pages[0]
+            got = tuple(page.shape[:2])
+            unit = page.tags.get("ResolutionUnit")
+            unit = unit.value.name if unit is not None and hasattr(unit.value, "name") else "?"
+        if got != tuple(shape[:2]) or "NONE" in str(unit).upper():
+            log(f"  WARNING: {os.path.basename(path)} re-read as shape={got} unit={unit}")
+    except Exception as exc:  # noqa: BLE001
+        log(f"  WARNING: {os.path.basename(path)} is not readable back: {exc}")
 
 
 # ------------------------------------------------------- whole-slide inputs
@@ -226,7 +318,7 @@ def normalise_band(band, dtype, lut):
     return normalise(band)
 
 
-def predict_banded(net, src, dtype, device, dst, tile_batch):
+def predict_banded(net, src, dtype, device, dst, tile_batch, pixel_um=None):
     """Predict a large plane in horizontal bands and stream it into a BigTIFF.
 
     Memory stays at O(BAND x W) regardless of the input height. The output is an
@@ -235,8 +327,13 @@ def predict_banded(net, src, dtype, device, dst, tile_batch):
     """
     h, w = src.shape
     lut = lut_from_sample(src, dtype)
+    res, unit = tiff_resolution(pixel_um)
+    px = pixel_um if pixel_um and pixel_um > 0 else 1.0
     tifffile.imwrite(dst, shape=(h, w), dtype=np.uint16, bigtiff=True, ome=True,
-                     photometric="minisblack", metadata={"axes": "YX"})
+                     photometric="minisblack", resolution=res, resolutionunit=unit,
+                     metadata={"axes": "YX",
+                               "PhysicalSizeX": float(px), "PhysicalSizeXUnit": "\u00b5m",
+                               "PhysicalSizeY": float(px), "PhysicalSizeYUnit": "\u00b5m"})
     out = tifffile.memmap(dst, mode="r+")
     try:
         for y0 in range(0, h, BAND):
@@ -249,6 +346,7 @@ def predict_banded(net, src, dtype, device, dst, tile_batch):
     finally:
         out.flush()
         del out
+    check_written(dst, (h, w))
 
 
 # ---------------------------------------------------------------------- network
@@ -361,7 +459,7 @@ def main():
     ap.add_argument("--output_dir", default=os.environ.get("OUTPUT_DIR", "/output"))
     ap.add_argument("--z_select", default="sharp", choices=("sharp", "mid", "all"),
                     help="reduce a z-stack input to inference plane(s)")
-    ap.add_argument("--tile_batch", type=int, default=8)
+    ap.add_argument("--tile_batch", type=int, default=16)
     ap.add_argument("--save_input", action="store_true",
                     help="also dump the normalised input plane next to the outputs")
     args = ap.parse_args()
@@ -396,6 +494,10 @@ def main():
 
     for path in files:
         uuid = os.path.splitext(os.path.basename(path))[0]
+        # carry the input pixel size over: the platform rejects outputs whose
+        # voxel size cannot be derived from the TIFF resolution tags
+        pixel_um = probe_spacing_um(path)
+        log(f"{uuid}: pixel size {pixel_um if pixel_um else 'unknown -> 1.0'} um")
 
         # whole-slide inputs cannot be decoded into memory at all; stream instead
         if is_huge(path):
@@ -419,7 +521,8 @@ def main():
                 dst = os.path.join(args.output_dir, "images", out_slug[ch], f"{uuid}.tif")
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 log(f"  {ch}:")
-                predict_banded(nets[ch], src, src.dtype, device, dst, args.tile_batch)
+                predict_banded(nets[ch], src, src.dtype, device, dst, args.tile_batch,
+                               pixel_um)
                 log(f"  {ch:<13} {h}x{w} uint16 -> {dst}  [{time.time() - t0:.1f} s]")
             del src
             continue
@@ -429,7 +532,10 @@ def main():
         if args.z_select == "mid":
             planes = [planes[len(planes) // 2]]
         elif args.z_select == "sharp":
-            planes = [planes[int(np.argmax([sharpness(p) for p in planes]))]]
+            scores = [focus_score(p) for p in planes]
+            k = int(np.argmax(scores))
+            planes = [planes[k]]
+            log(f"  best z = {k}/{len(scores)} (normalised variance {scores[k]:.4f})")
         planes8 = [normalise(p) for p in planes]
         log(f"{uuid}: {len(planes8)} inference plane(s), {raw_shape} {raw_dtype}")
 
@@ -438,12 +544,12 @@ def main():
             pred = predict_channel(nets[ch], planes8, device, args.z_select, args.tile_batch)
             out = np.round(np.clip(pred, 0, 255) * (65535.0 / 255.0)).astype(np.uint16)
             dst = os.path.join(args.output_dir, "images", out_slug[ch], f"{uuid}.tif")
-            write_ome_tiff(dst, out)
+            write_ome_tiff(dst, out, pixel_um)
             log(f"  {ch:<13} {out.shape} uint16 -> {dst}  [{time.time() - t0:.2f} s]")
 
         if args.save_input:
             dst = os.path.join(args.output_dir, "debug", f"{uuid}_input.tif")
-            write_ome_tiff(dst, planes8[0])
+            write_ome_tiff(dst, planes8[0], pixel_um)
             log(f"  input dump -> {dst}")
 
     log("done")

@@ -18,8 +18,7 @@ RUN pip install --no-cache-dir \
         "tifffile>=2024.5.10" \
         "imagecodecs>=2024.1.1" \
         "pillow>=10.0" \
- && (pip install --no-cache-dir "SimpleITK>=2.3.1" \
-     || echo "SimpleITK unavailable: .mha inputs will be rejected, .tif works")
+        "SimpleITK>=2.3.1"
 
 WORKDIR /opt/app
 COPY app/ /opt/app/

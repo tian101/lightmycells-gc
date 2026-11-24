@@ -15,15 +15,14 @@ ENV PYTHONUNBUFFERED=1 \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
-# tifffile writes the OME-TIFF outputs; imagecodecs is needed to *decode*
-# compressed inputs (LZW / Deflate / JPEG). SimpleITK only adds the .mha variant
-# of the same interface, so a failure there degrades instead of breaking the build.
+# tifffile writes the OME-TIFF outputs; imagecodecs decodes compressed inputs
+# (LZW / Deflate / JPEG). SimpleITK is a hard requirement: the challenge forwards
+# cases as .mha as well as .tif, so a missing reader would fail at run time.
 RUN pip install --no-cache-dir \
         "tifffile>=2024.5.10" \
         "imagecodecs>=2024.1.1" \
         "pillow>=10.0" \
- && (pip install --no-cache-dir "SimpleITK>=2.3.1" \
-     || echo "SimpleITK unavailable: .mha inputs will be rejected, .tif works")
+        "SimpleITK>=2.3.1"
 
 COPY fetch_weights.py /opt/fetch_weights.py
 RUN python /opt/fetch_weights.py --dest /opt/weights --tag v1
